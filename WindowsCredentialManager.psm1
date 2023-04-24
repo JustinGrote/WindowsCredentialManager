@@ -34,7 +34,7 @@ function Get-WinCredential {
   )
   process {
     if ($Name) {
-      $Target = Resolve-Target
+      $Target = Resolve-Target $Namespace $Name
     }
     #NOTE: Null will return nothing vs. the absence of a parameter which returns everything
     [ICredential[]]$credentials = if ($Target) {
@@ -63,16 +63,18 @@ function Save-WinCredential {
   .SYNOPSIS
     Sets a credential in the Windows Credential Manager.
   #>
-  [CmdletBinding(SupportsShouldProcess)]
+  [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Credential')]
   param(
     #The credential that you want to store.
     [Parameter(Position = 0, Mandatory, ValueFromPipeline)][PSCredential]$Credential,
     #The name of the secret that you wish to set
-    [Parameter(Mandatory, ParameterSetName = 'Name')][ValidateNotNullOrEmpty()][string]$Name,
+    [Parameter(Position = 1, ParameterSetName = 'Credential')][ValidateNotNullOrEmpty()][string]$Name,
     #The namespace for the name of the credential you wish to use. Defaults to "powershell"
-    [Parameter(ParameterSetName = 'Name')][ValidateNotNullOrEmpty()][string]$Namespace = $DefaultNamespace,
+    [Parameter(ParameterSetName = 'Credential')][ValidateNotNullOrEmpty()][string]$Namespace = $DefaultNamespace,
     #The target you wish to set. If not specified, uses powershell:username as the target
-    [Parameter(ParameterSetName = 'Target')][ValidateNotNullOrEmpty()][string]$Target
+    [Parameter(ParameterSetName = 'Target')][ValidateNotNullOrEmpty()][string]$Target,
+    #Allow overwrite of existing credentials
+    [Switch]$AllowClobber
   )
   process {
     if ($Name) {
@@ -83,9 +85,15 @@ function Save-WinCredential {
     }
     if (-not $PSCmdlet.ShouldProcess($Target, "Save Credential [Username $($Credential.UserName)]")) { return }
 
+    if ((Get-WinCredential -Target $Target) -and -not $AllowClobber) {
+      Write-Error "Credential for target '$Target' already exists. Use -AllowClobber to overwrite."
+      return
+    }
+
     $result = [CredentialManager]::SaveCredentials($Target, $Credential.GetNetworkCredential(), [CredentialType]::Generic, $true)
     if (-not $result) {
-      $PSCmdlet.WriteError("Failed to save credential for target '$Target'")
+      Write-Error "Failed to save credential for target '$Target'"
+      return
     }
     Write-Verbose "Created Windows Credential with Target Name: $($result.TargetName)"
   }
@@ -113,7 +121,7 @@ function ConvertFrom-WinICredential {
 function Remove-WinCredential {
   <#
   .SYNOPSIS
-    Removes a credential from the Windows Credential Manager.
+    Removes a credential from the Windows Credential Manager. For safety, you must explicitly specify the name of the credential, you cannot pass a credential because the username may accidentally match something you didn't intend.
   #>
   [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Name', ConfirmImpact = 'High')]
   [OutputType([PSCredential])]
@@ -124,9 +132,7 @@ function Remove-WinCredential {
     #The namespace for the name of the credential you wish to use. Defaults to "powershell"
     [Parameter(ParameterSetName = 'Name')][ValidateNotNullOrEmpty()][string]$Namespace = $DefaultNamespace,
     #The target you wish to remove. Supports "Like" wildcard syntax
-    [Parameter(Mandatory, ParameterSetName = 'Target')][ValidateNotNullOrEmpty()][string]$Target,
-    #Allow overwrite of existing credentials
-    [Switch]$AllowClobber
+    [Parameter(Mandatory, ParameterSetName = 'Target')][ValidateNotNullOrEmpty()][string]$Target
   )
   process {
     if ($Name) {
@@ -135,7 +141,11 @@ function Remove-WinCredential {
     if (-not $PSCmdlet.ShouldProcess($Target, "Remove Credential [Username $($Credential.UserName)]")) { return }
 
     try {
-      $result = [CredentialManager]::RemoveCredentials($Target, [CredentialType]::Generic)
+      [bool]$result = [CredentialManager]::RemoveCredentials($Target, [CredentialType]::Generic)
+      if (-not $result) {
+        Write-Error "Failed to remove credential for target '$Target'"
+        return
+      }
     } catch {
       $innerException = $PSItem.Exception.InnerException
       $APIErrorCode = $innerException.ErrorCode
@@ -150,11 +160,7 @@ function Remove-WinCredential {
       }
       $PSCmdlet.ThrowTerminatingError($PSItem)
     }
-    if (-not $result) {
-      $PSCmdlet.WriteError("Failed to remove credential for target '$Target'")
-      return
-    }
-    Write-Verbose "Removed Windows Credential with Target Name: $($result.TargetName)"
+    Write-Verbose "Removed Windows Credential with Target: $target"
   }
 }
 
